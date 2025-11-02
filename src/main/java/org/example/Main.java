@@ -1,16 +1,49 @@
 package org.example;
 
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.Scanner;
 
 public class Main {
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
-        DateTimeFormatter fmt = DateTimeFormatter.ISO_LOCAL_DATE; // yyyy-MM-dd
-
+        
         MoodTracker tracker = new MoodTracker("data/moods.csv");
+
+        // --- Login flow: tampilkan terlebih dahulu; lanjutkan hanya jika login berhasil ---
+        boolean loggedIn = false;
+        while (!loggedIn) {
+            System.out.println("=== Login (simulasi) ===");
+            System.out.print("Masukkan username (atau 'q' untuk keluar): ");
+            String username = scanner.nextLine().trim();
+            if (username.equalsIgnoreCase("q")) {
+                System.out.println("Keluar. Terima kasih.");
+                scanner.close();
+                return;
+            }
+            if (username.isEmpty()) {
+                System.out.println("Username tidak boleh kosong. Coba lagi.");
+                continue;
+            }
+            System.out.print("Masukkan tanggal login (yyyy-MM-dd) atau kosongkan untuk sekarang: ");
+            String loginDateStr = scanner.nextLine().trim();
+            java.time.LocalDate loginDate;
+            if (loginDateStr.isEmpty()) {
+                loginDate = java.time.LocalDate.now();
+            } else {
+                try {
+                    loginDate = java.time.LocalDate.parse(loginDateStr);
+                } catch (java.time.format.DateTimeParseException ex) {
+                    System.out.println("Format tanggal login salah. Gunakan yyyy-MM-dd. Coba lagi.");
+                    continue;
+                }
+            }
+            java.time.LocalDateTime loginDateTime = java.time.LocalDateTime.of(loginDate, java.time.LocalTime.now());
+            tracker.setUserLoginDate(loginDateTime);
+            System.out.println("Login berhasil sebagai '" + username + "' pada " + loginDateTime + ".");
+            loggedIn = true;
+        }
 
         boolean running = true;
         while (running) {
@@ -18,11 +51,10 @@ public class Main {
             System.out.println("1) Tambah mood (input user)");
             System.out.println("2) Simpan ke file");
             System.out.println("3) Tampilkan statistik mingguan");
-            System.out.println("4) Tampilkan rekomendasi");
-            System.out.println("5) Keluar");
-            System.out.println("6) Tampilkan payload JSON yang akan dikirim");
-            System.out.println("7) Simulasikan kirim data (tulis payload ke file)");
-            System.out.print("Pilih (1-7): ");
+            System.out.println("4) Tampilkan riwayat entri");
+            System.out.println("5) Tampilkan rekomendasi");
+            System.out.println("6) Keluar");
+            System.out.print("Pilih (1-6): ");
 
             String line = scanner.nextLine().trim();
             if (line.isEmpty()) continue;
@@ -35,6 +67,7 @@ public class Main {
             }
 
             switch (choice) {
+                
                 case 1 -> {
                     System.out.println("Pilih mood:");
                     System.out.println("1) Kacau");
@@ -65,26 +98,70 @@ public class Main {
                         break;
                     }
 
-                    System.out.print("Masukkan tanggal (yyyy-MM-dd) atau kosongkan untuk hari ini: ");
-                    String dateStr = scanner.nextLine().trim();
-                    LocalDate date;
-                    if (dateStr.isEmpty()) {
-                        date = LocalDate.now();
+                    // Pilihan input: pilih hari-ke (1..7) relatif pada 7 hari terakhir, dan jam (0..23)
+                    LocalDate today = LocalDate.now();
+                    LocalDate windowStart = today.minusDays(6); // default window start
+                    // prefer tracker user login date as anchor if set and within window
+                    LocalDate start;
+                    if (tracker.getUserLoginDate() != null) {
+                        LocalDate loginLocal = tracker.getUserLoginDate().toLocalDate();
+                        if (!loginLocal.isBefore(windowStart) && !loginLocal.isAfter(today)) {
+                            start = loginLocal;
+                        } else {
+                            start = windowStart;
+                        }
+                    } else {
+                        start = windowStart;
+                    }
+
+                    System.out.print("Masukkan hari-ke (1-7) untuk memilih hari dalam 7-hari terakhir, atau kosongkan untuk hari ini: ");
+                    String hariKeStr = scanner.nextLine().trim();
+                    LocalDate chosenDate;
+                    if (hariKeStr.isEmpty()) {
+                        chosenDate = LocalDate.now();
+                    } else {
+                        int hk;
+                        try {
+                            hk = Integer.parseInt(hariKeStr);
+                        } catch (NumberFormatException ex) {
+                            System.out.println("Input hari-ke tidak valid. Entry dibatalkan.");
+                            break;
+                        }
+                        if (hk < 1 || hk > 7) {
+                            System.out.println("Hari-ke harus antara 1 dan 7. Entry dibatalkan.");
+                            break;
+                        }
+                        // map hari-ke ke tanggal: 1 -> start, 7 -> today
+                        chosenDate = start.plusDays(hk - 1);
+                    }
+
+                    System.out.print("Masukkan jam (0-23) atau kosongkan untuk jam sekarang: ");
+                    String jamStr = scanner.nextLine().trim();
+                    int hour;
+                    if (jamStr.isEmpty()) {
+                        hour = LocalDateTime.now().getHour();
                     } else {
                         try {
-                            date = LocalDate.parse(dateStr, fmt);
-                        } catch (DateTimeParseException ex) {
-                            System.out.println("Format tanggal salah, gunakan yyyy-MM-dd. Entry dibatalkan.");
+                            hour = Integer.parseInt(jamStr);
+                        } catch (NumberFormatException ex) {
+                            System.out.println("Input jam tidak valid. Entry dibatalkan.");
+                            break;
+                        }
+                        if (hour < 0 || hour > 23) {
+                            System.out.println("Jam harus antara 0 dan 23. Entry dibatalkan.");
                             break;
                         }
                     }
-                    tracker.inputMood(mood, date);
+
+                    LocalDateTime dateTime = LocalDateTime.of(chosenDate, LocalTime.of(hour, 0));
+                    tracker.inputMood(mood, dateTime);
                     int score = MoodTracker.scoreForMood(mood);
-                    System.out.println("Entry ditambahkan: " + mood + " (skor: " + score + ") pada " + date);
+                    System.out.println("Entry ditambahkan: " + mood + " (skor: " + score + ") pada " + dateTime);
                 }
                 case 2 -> tracker.saveToLocal();
                 case 3 -> tracker.displayWeeklyGraph();
-                case 4 -> {
+                case 4 -> tracker.displayEntryHistory();
+                case 5 -> {
                     WeeklyStats stats = tracker.calculateWeeklyStats();
                     double avg = stats.getAverageScore();
                     Recommendation rec = new Recommendation();
@@ -96,16 +173,6 @@ public class Main {
                     }
                 }
                 case 6 -> {
-                    System.out.println("\nPayload JSON (all entries):");
-                    System.out.println(tracker.getAllEntriesJson());
-                }
-                case 7 -> {
-                    System.out.print("Masukkan path output untuk payload (enter untuk data/sent_payload.json): ");
-                    String out = scanner.nextLine().trim();
-                    if (out.isEmpty()) out = "data/sent_payload.json";
-                    tracker.simulateSendPayload(out);
-                }
-                case 5 -> {
                     System.out.print("Simpan sebelum keluar? (y/N): ");
                     String save = scanner.nextLine().trim().toLowerCase();
                     if (save.equals("y") || save.equals("yes")) {
@@ -113,7 +180,7 @@ public class Main {
                     }
                     running = false;
                 }
-                default -> System.out.println("Pilihan tidak dikenal. Masukkan 1-7.");
+                default -> System.out.println("Pilihan tidak dikenal. Masukkan 1-6.");
             }
         }
 

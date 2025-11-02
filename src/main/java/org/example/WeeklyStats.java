@@ -1,3 +1,4 @@
+// ...existing code...
 package org.example;
 
 public class WeeklyStats {
@@ -6,6 +7,8 @@ public class WeeklyStats {
     private String dominantMood;
     private int totalCount;
     private double averageScore;
+
+    public static final int REQUIRED_DAYS = 7;
 
     public WeeklyStats(int totalPositive, int totalNegative, String dominantMood) {
         this.totalPositive = totalPositive;
@@ -23,11 +26,18 @@ public class WeeklyStats {
         this.averageScore = averageScore;
     }
 
+    // baru: apakah data minggu ini lengkap (7 hari)
+    public boolean isCompleteWeek() {
+        return totalCount >= REQUIRED_DAYS;
+    }
+
     public String calculateDominantMood() {
+        if (!isCompleteWeek()) return "";
         return dominantMood;
     }
 
     public float getPositiveRatio() {
+        if (!isCompleteWeek()) return 0f;
         int total = totalPositive + totalNegative;
         if (total == 0) return 0f;
         return (float) totalPositive / total;
@@ -50,7 +60,7 @@ public class WeeklyStats {
     }
 
     public String getAverageMoodLabel() {
-        if (totalCount == 0) return "";
+        if (!isCompleteWeek()) return "";
         int rounded = (int) Math.round(averageScore);
         return MoodTracker.moodForScore(rounded);
     }
