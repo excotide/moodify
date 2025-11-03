@@ -4,57 +4,105 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Scanner;
+import org.mindrot.jbcrypt.BCrypt;
 
 public class Main {
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
         
-        MoodTracker tracker = new MoodTracker("data/moods.csv");
+        // Inisialisasi Supabase dari environment variables atau file .env (fallback)
+        // Catatan: System.getenv() menerima NAMA variabel lingkungan, bukan nilai.
+        // Jika Anda tidak menyetel env vars, buat file .env di working directory dengan:
+        // SUPABASE_URL="https://your-project.supabase.co"
+        // SUPABASE_KEY="your_anon_or_service_key"
+        Dotenv.load();
+        String supabaseUrl = System.getenv("SUPABASE_URL");
+        if (supabaseUrl == null) supabaseUrl = Dotenv.get("SUPABASE_URL");
+        String supabaseKey = System.getenv("SUPABASE_KEY");
+        if (supabaseKey == null) supabaseKey = Dotenv.get("SUPABASE_KEY");
+        if (supabaseUrl == null || supabaseKey == null) {
+            System.err.println("Environment variables SUPABASE_URL dan SUPABASE_KEY belum diset (atau .env tidak berisi keduanya). Keluar.");
+            System.err.println("Contoh (PowerShell session):");
+            System.err.println("  $env:SUPABASE_URL='https://your-project.supabase.co'");
+            System.err.println("  $env:SUPABASE_KEY='your_anon_or_service_key'");
+            System.err.println("Atau buat file .env di folder proyek dengan dua baris: SUPABASE_URL=... dan SUPABASE_KEY=...");
+            scanner.close();
+            return;
+        }
+        SupabaseClient supabaseClient = new SupabaseClient(supabaseUrl, supabaseKey);
+        MoodTracker tracker = new MoodTracker(supabaseClient);
 
-        // --- Login flow: tampilkan terlebih dahulu; lanjutkan hanya jika login berhasil ---
-        boolean loggedIn = false;
-        while (!loggedIn) {
-            System.out.println("=== Login (simulasi) ===");
-            System.out.print("Masukkan username (atau 'q' untuk keluar): ");
-            String username = scanner.nextLine().trim();
-            if (username.equalsIgnoreCase("q")) {
+        // --- Login / Register flow: pilih register atau login ---
+        SupabaseClient.UserEntry currentUser = null;
+        boolean authenticated = false;
+        while (!authenticated) {
+            System.out.println("=== Autentikasi ===");
+            System.out.println("1) Login");
+            System.out.println("2) Daftar user baru");
+            System.out.println("q) Keluar");
+            System.out.print("Pilih (1/2/q): ");
+            String opt = scanner.nextLine().trim();
+            if (opt.equalsIgnoreCase("q")) {
                 System.out.println("Keluar. Terima kasih.");
                 scanner.close();
                 return;
             }
-            if (username.isEmpty()) {
-                System.out.println("Username tidak boleh kosong. Coba lagi.");
+            if (opt.equals("2")) {
+                // Register
+                System.out.print("Pilih username: ");
+                String username = scanner.nextLine().trim();
+                if (username.isEmpty()) { System.out.println("Username tidak boleh kosong."); continue; }
+                // check exists
+                SupabaseClient.UserEntry uexists = supabaseClient.fetchUserByUsername(username);
+                if (uexists != null) { System.out.println("Username sudah terdaftar. Silakan login atau pilih username lain."); continue; }
+                System.out.print("Pilih password: ");
+                String password = scanner.nextLine();
+                if (password.isEmpty()) { System.out.println("Password tidak boleh kosong."); continue; }
+                String hash = BCrypt.hashpw(password, BCrypt.gensalt(12));
+                boolean ok = supabaseClient.createUser(username, hash, LocalDateTime.now());
+                if (ok) {
+                    System.out.println("Pendaftaran berhasil. Silakan login.");
+                } else {
+                    System.out.println("Gagal mendaftar (cek koneksi / aturan DB). Coba lagi.");
+                }
                 continue;
             }
-            System.out.print("Masukkan tanggal login (yyyy-MM-dd) atau kosongkan untuk sekarang: ");
-            String loginDateStr = scanner.nextLine().trim();
-            java.time.LocalDate loginDate;
-            if (loginDateStr.isEmpty()) {
-                loginDate = java.time.LocalDate.now();
-            } else {
-                try {
-                    loginDate = java.time.LocalDate.parse(loginDateStr);
-                } catch (java.time.format.DateTimeParseException ex) {
-                    System.out.println("Format tanggal login salah. Gunakan yyyy-MM-dd. Coba lagi.");
-                    continue;
-                }
+            if (opt.equals("1")) {
+                System.out.print("Username: ");
+                String username = scanner.nextLine().trim();
+                if (username.isEmpty()) { System.out.println("Username tidak boleh kosong."); continue; }
+                System.out.print("Password: ");
+                String password = scanner.nextLine();
+                SupabaseClient.UserEntry u = supabaseClient.fetchUserByUsername(username);
+                if (u == null) { System.out.println("User tidak ditemukan."); continue; }
+                if (u.passwordHash == null || u.passwordHash.isEmpty()) { System.out.println("User belum memiliki password yang valid."); continue; }
+                boolean ok = BCrypt.checkpw(password, u.passwordHash);
+                if (!ok) { System.out.println("Password salah. Coba lagi."); continue; }
+                // sukses
+                currentUser = u;
+                LocalDateTime now = LocalDateTime.now();
+                tracker.setUserLoginDate(now);
+                // set current user id in tracker so entries are associated
+                tracker.setUserId(currentUser.id);
+                // print current user id for quick debugging
+                System.out.println("(debug) current user id = " + currentUser.id);
+                supabaseClient.updateUserLastLogin(u.id, now);
+                System.out.println("Login berhasil sebagai '" + username + "' pada " + now + ".");
+                authenticated = true;
+                continue;
             }
-            java.time.LocalDateTime loginDateTime = java.time.LocalDateTime.of(loginDate, java.time.LocalTime.now());
-            tracker.setUserLoginDate(loginDateTime);
-            System.out.println("Login berhasil sebagai '" + username + "' pada " + loginDateTime + ".");
-            loggedIn = true;
+            System.out.println("Pilihan tidak dikenal. Masukkan 1,2 atau q.");
         }
 
         boolean running = true;
         while (running) {
             System.out.println("\n=== Moodify Menu ===");
             System.out.println("1) Tambah mood (input user)");
-            System.out.println("2) Simpan ke file");
-            System.out.println("3) Tampilkan statistik mingguan");
-            System.out.println("4) Tampilkan riwayat entri");
-            System.out.println("5) Tampilkan rekomendasi");
-            System.out.println("6) Keluar");
-            System.out.print("Pilih (1-6): ");
+            System.out.println("2) Tampilkan statistik mingguan");
+            System.out.println("3) Tampilkan riwayat entri");
+            System.out.println("4) Tampilkan rekomendasi");
+            System.out.println("5) Keluar");
+            System.out.print("Pilih (1-5): ");
 
             String line = scanner.nextLine().trim();
             if (line.isEmpty()) continue;
@@ -154,14 +202,28 @@ public class Main {
                     }
 
                     LocalDateTime dateTime = LocalDateTime.of(chosenDate, LocalTime.of(hour, 0));
-                    tracker.inputMood(mood, dateTime);
+
+                    // Validasi untuk tidak menambahkan data pada masa depan
+                    if (dateTime.isAfter(LocalDateTime.now())) {
+                        System.out.println("Tidak dapat menambahkan data pada masa depan. Entry dibatalkan.");
+                        break;
+                    }
+
+                    boolean saved = tracker.inputMood(mood, dateTime);
                     int score = MoodTracker.scoreForMood(mood);
-                    System.out.println("Entry ditambahkan: " + mood + " (skor: " + score + ") pada " + dateTime);
+                    if (saved) {
+                        System.out.println("Entry ditambahkan: " + mood + " (skor: " + score + ") pada " + dateTime);
+                    } else {
+                        System.out.println("Gagal menambahkan entry. Periksa koneksi/permission pada Supabase.");
+                    }
                 }
-                case 2 -> tracker.saveToLocal();
-                case 3 -> tracker.displayWeeklyGraph();
-                case 4 -> tracker.displayEntryHistory();
-                case 5 -> {
+                case 2 -> {
+                    tracker.displayWeeklyGraph();
+                }
+                case 3 -> {
+                    tracker.displayEntryHistory();
+                }
+                case 4 -> {
                     WeeklyStats stats = tracker.calculateWeeklyStats();
                     double avg = stats.getAverageScore();
                     Recommendation rec = new Recommendation();
@@ -172,12 +234,7 @@ public class Main {
                         System.out.println(" - " + r);
                     }
                 }
-                case 6 -> {
-                    System.out.print("Simpan sebelum keluar? (y/N): ");
-                    String save = scanner.nextLine().trim().toLowerCase();
-                    if (save.equals("y") || save.equals("yes")) {
-                        tracker.saveToLocal();
-                    }
+                case 5 -> {
                     running = false;
                 }
                 default -> System.out.println("Pilihan tidak dikenal. Masukkan 1-6.");
