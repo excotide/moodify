@@ -74,7 +74,7 @@ public class SupabaseClient {
                     URLEncoder.encode(endIso, StandardCharsets.UTF_8));
             String uri = String.format("%s/rest/v1/moods?select=%s&%s", baseUrl, select, filter);
 
-            System.out.println("[SupabaseClient] Request URI: " + uri);
+            // request sent (URI hidden in release)
 
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(uri))
@@ -85,8 +85,7 @@ public class SupabaseClient {
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
 
-            System.out.println("[SupabaseClient] Response status: " + resp.statusCode());
-            System.out.println("[SupabaseClient] Response body: " + resp.body());
+            // response received
 
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
                 System.err.println("[SupabaseClient] fetchEntriesBetween failed: status=" + resp.statusCode());
@@ -190,7 +189,7 @@ public class SupabaseClient {
             String hn = unquote(headers[h]).trim().toLowerCase();
             if (hn.equals("mood") || hn.equals("moods")) idxMood = h;
             else if (hn.equals("score") || hn.equals("skor")) idxScore = h;
-            else if (hn.equals("timestamp") || hn.equals("time") || hn.equals("created_at")) idxTs = h;
+            else if (hn.equals("timestamp") || hn.equals("time")) idxTs = h;
             else if (hn.equals("user_id") || hn.equals("userid") || hn.equals("user")) idxUser = h;
         }
         if (idxMood == -1 || idxScore == -1 || idxTs == -1) {
@@ -284,7 +283,8 @@ public class SupabaseClient {
      */
     public UserEntry fetchUserByUsername(String username) {
         try {
-            String select = URLEncoder.encode("id,username,password_hash,last_login", StandardCharsets.UTF_8);
+            // request the user's 'timestamp' column (canonical column name used: 'timestamp')
+            String select = URLEncoder.encode("id,username,password_hash,last_login,timestamp", StandardCharsets.UTF_8);
             String filter = String.format("username=eq.%s&limit=1", URLEncoder.encode(username, StandardCharsets.UTF_8));
             String uri = String.format("%s/rest/v1/users?select=%s&%s", baseUrl, select, filter);
             HttpRequest req = HttpRequest.newBuilder()
@@ -334,26 +334,82 @@ public class SupabaseClient {
         if (csv == null || csv.isBlank()) return out;
         String[] lines = csv.split("\\r?\\n");
         if (lines.length <= 1) return out; // header only
-        // header: id,username,password_hash,last_login
+
+        // parse header to find indices (more robust than fixed positions)
+        String headerLine = lines[0].trim();
+        if (headerLine.isEmpty()) return out;
+        String[] headers = headerLine.split(",", -1);
+        int idxId = -1, idxUsername = -1, idxPw = -1, idxLastLogin = -1, idxCreatedAt = -1;
+        for (int h = 0; h < headers.length; h++) {
+            String hn = unquote(headers[h]).trim().toLowerCase();
+            if (hn.equals("id")) idxId = h;
+            else if (hn.equals("username") || hn.equals("user")) idxUsername = h;
+            else if (hn.equals("password_hash") || hn.equals("password") || hn.equals("pw")) idxPw = h;
+            else if (hn.equals("last_login") || hn.equals("lastlogin") || hn.equals("last_login_at")) idxLastLogin = h;
+            else if (hn.equals("createdat") || hn.equals("created") || hn.equals("timestamp")) idxCreatedAt = h;
+        }
+        // require at least id and username and pw (password_hash may be empty but columns present)
+        if (idxId == -1 || idxUsername == -1 || idxPw == -1) {
+            // fallback: try to parse with minimal positions
+            for (int i = 1; i < lines.length; i++) {
+                String line = lines[i].trim();
+                if (line.isEmpty()) continue;
+                String[] cols = line.split(",", -1);
+                if (cols.length < 4) continue;
+                String id = unquote(cols[0]);
+                String username = unquote(cols[1]);
+                String pwHash = unquote(cols[2]);
+                String lastLoginStr = unquote(cols[3]);
+                LocalDateTime lastLogin = null;
+                if (lastLoginStr != null && !lastLoginStr.isEmpty()) {
+                    try { lastLogin = java.time.OffsetDateTime.parse(lastLoginStr).toLocalDateTime(); } catch (Exception e) {
+                        try { lastLogin = LocalDateTime.parse(lastLoginStr); } catch (Exception ex) { lastLogin = null; }
+                    }
+                }
+                LocalDateTime createdAt = null;
+                if (cols.length >= 5) {
+                    String createdAtStr = unquote(cols[4]);
+                    if (createdAtStr != null && !createdAtStr.isEmpty()) {
+                            // normalize similar to parseCsvToEntries: replace space with 'T' and fix +00 offset
+                            createdAtStr = createdAtStr.replace(" ", "T");
+                            if (createdAtStr.endsWith("+00")) createdAtStr = createdAtStr + ":00";
+                            try { createdAt = java.time.OffsetDateTime.parse(createdAtStr).toLocalDateTime(); } catch (Exception e) {
+                                try { createdAt = LocalDateTime.parse(createdAtStr); } catch (Exception ex) { createdAt = null; }
+                            }
+                        }
+                }
+                out.add(new UserEntry(id, username, pwHash, lastLogin, createdAt));
+            }
+            return out;
+        }
+
         for (int i = 1; i < lines.length; i++) {
             String line = lines[i].trim();
             if (line.isEmpty()) continue;
             String[] cols = line.split(",", -1);
-            if (cols.length < 4) continue;
-            String id = unquote(cols[0]);
-            String username = unquote(cols[1]);
-            String pwHash = unquote(cols[2]);
-            String lastLoginStr = unquote(cols[3]);
+            String id = idxId >= 0 && cols.length > idxId ? unquote(cols[idxId]) : null;
+            String username = idxUsername >= 0 && cols.length > idxUsername ? unquote(cols[idxUsername]) : null;
+            String pwHash = idxPw >= 0 && cols.length > idxPw ? unquote(cols[idxPw]) : null;
+            String lastLoginStr = idxLastLogin >= 0 && cols.length > idxLastLogin ? unquote(cols[idxLastLogin]) : null;
             LocalDateTime lastLogin = null;
             if (lastLoginStr != null && !lastLoginStr.isEmpty()) {
-                try {
-                    java.time.OffsetDateTime odt = java.time.OffsetDateTime.parse(lastLoginStr);
-                    lastLogin = odt.toLocalDateTime();
-                } catch (Exception e) {
+                try { lastLogin = java.time.OffsetDateTime.parse(lastLoginStr).toLocalDateTime(); } catch (Exception e) {
                     try { lastLogin = LocalDateTime.parse(lastLoginStr); } catch (Exception ex) { lastLogin = null; }
                 }
             }
-            out.add(new UserEntry(id, username, pwHash, lastLogin));
+            LocalDateTime createdAt = null;
+            if (idxCreatedAt >= 0 && cols.length > idxCreatedAt) {
+                String createdAtStr = unquote(cols[idxCreatedAt]);
+                if (createdAtStr != null && !createdAtStr.isEmpty()) {
+                    // normalize like entries parser
+                    createdAtStr = createdAtStr.replace(" ", "T");
+                    if (createdAtStr.endsWith("+00")) createdAtStr = createdAtStr + ":00";
+                    try { createdAt = java.time.OffsetDateTime.parse(createdAtStr).toLocalDateTime(); } catch (Exception e) {
+                        try { createdAt = LocalDateTime.parse(createdAtStr); } catch (Exception ex) { createdAt = null; }
+                    }
+                }
+            }
+            out.add(new UserEntry(id, username, pwHash, lastLogin, createdAt));
         }
         return out;
     }
@@ -363,8 +419,9 @@ public class SupabaseClient {
         public final String username;
         public final String passwordHash;
         public final LocalDateTime lastLogin;
-        public UserEntry(String id, String username, String passwordHash, LocalDateTime lastLogin) {
-            this.id = id; this.username = username; this.passwordHash = passwordHash; this.lastLogin = lastLogin;
+        public final LocalDateTime createdAt;
+        public UserEntry(String id, String username, String passwordHash, LocalDateTime lastLogin, LocalDateTime createdAt) {
+            this.id = id; this.username = username; this.passwordHash = passwordHash; this.lastLogin = lastLogin; this.createdAt = createdAt;
         }
     }
 

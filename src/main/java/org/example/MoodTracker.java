@@ -13,6 +13,8 @@ public class MoodTracker {
     private final SupabaseClient supabase;
     // store last login date/time in memory for anchoring entry selection
     private java.time.LocalDateTime userLoginDate = null;
+    // store anchor date (first login / account creation) if available
+    private java.time.LocalDateTime anchorDate = null;
     // store current logged-in user id (nullable)
     private String userId = null;
 
@@ -26,6 +28,57 @@ public class MoodTracker {
 
     public LocalDateTime getUserLoginDate() {
         return this.userLoginDate;
+    }
+
+    public void setAnchorDate(LocalDateTime dt) {
+        this.anchorDate = dt;
+    }
+
+    public LocalDateTime getAnchorDate() {
+        return this.anchorDate;
+    }
+
+    /**
+     * Hitung hari ke-berapa hari ini sejak anchor (anchor = first-login/createdAt jika tersedia,
+     * jika tidak pakai userLoginDate, jika tidak pakai hari ini sebagai anchor sehingga hasil = 1).
+     * Mengembalikan nilai minimal 1.
+     */
+    public long getTodayDayNumber() {
+        // Compute day-number as difference between account creation (anchorDate)
+        // and the current login date (userLoginDate). If anchorDate is missing,
+        // return 1. If userLoginDate is missing, fall back to LocalDate.now().
+        if (this.anchorDate == null) return 1L;
+        java.time.LocalDate anchorLocal = this.anchorDate.toLocalDate();
+        java.time.LocalDate loginLocal = (this.userLoginDate != null) ? this.userLoginDate.toLocalDate() : java.time.LocalDate.now();
+        if (anchorLocal.isAfter(loginLocal)) anchorLocal = loginLocal;
+        long days = java.time.Duration.between(anchorLocal.atStartOfDay(), loginLocal.atStartOfDay()).toDays() + 1;
+        return Math.max(1, days);
+    }
+
+    /**
+     * Return a debug string that shows intermediate values used to compute today's day number.
+     */
+    public String getTodayDayNumberDebug() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("getTodayDayNumber debug:\n");
+        sb.append("  anchorDate (raw) = ").append(this.anchorDate).append("\n");
+        sb.append("  userLoginDate (raw) = ").append(this.userLoginDate).append("\n");
+        if (this.anchorDate == null) {
+            sb.append("  -> anchorDate is null, returning day=1\n");
+            return sb.toString();
+        }
+        java.time.LocalDate anchorLocal = this.anchorDate.toLocalDate();
+        java.time.LocalDate loginLocal = (this.userLoginDate != null) ? this.userLoginDate.toLocalDate() : java.time.LocalDate.now();
+        sb.append("  anchorLocal = ").append(anchorLocal).append("\n");
+        sb.append("  loginLocal  = ").append(loginLocal).append("\n");
+        if (anchorLocal.isAfter(loginLocal)) {
+            sb.append("  anchorLocal is after loginLocal; adjusted anchorLocal = loginLocal\n");
+            anchorLocal = loginLocal;
+        }
+        long days = java.time.Duration.between(anchorLocal.atStartOfDay(), loginLocal.atStartOfDay()).toDays() + 1;
+        sb.append("  computed days (before max) = ").append(days).append("\n");
+        sb.append("  result (max 1) = ").append(Math.max(1, days)).append("\n");
+        return sb.toString();
     }
 
     public boolean inputMood(String mood, LocalDateTime dateTime) {
@@ -64,17 +117,29 @@ public class MoodTracker {
         }
 
         System.out.println("Riwayat entri:");
+    // determine anchor for day counting: prefer anchorDate (account creation), otherwise fall back to earliest entry date
+    LocalDate anchorLocal = null;
+    if (this.anchorDate != null) anchorLocal = this.anchorDate.toLocalDate();
+    else anchorLocal = entries.get(0).timestamp.toLocalDate();
+
         for (SupabaseClient.MoodEntry e : entries) {
             String dayOfWeek = e.timestamp.getDayOfWeek().toString();
-            String dayInIndonesian = translateDayToIndonesian(dayOfWeek); // Mengubah hari ke dalam bahasa Indonesia
-            long daysSinceStart = java.time.Duration.between(userLoginDate.toLocalDate().atStartOfDay(), e.timestamp.toLocalDate().atStartOfDay()).toDays() + 1; // Menghitung hari ke-berapa sejak login
+            String dayInIndonesian = translateDayToIndonesian(dayOfWeek);
+            long daysSinceStart = java.time.Duration.between(anchorLocal.atStartOfDay(), e.timestamp.toLocalDate().atStartOfDay()).toDays() + 1;
             System.out.println("Hari ke-" + daysSinceStart + " - " + e.mood + " (skor: " + e.score + ") [hari: " + dayInIndonesian + "]");
         }
     }
 
     public void displayWeeklyGraph() {
         LocalDate today = LocalDate.now();
-        LocalDate start = userLoginDate != null ? userLoginDate.toLocalDate() : today.minusDays(6);
+        LocalDate windowStart = today.minusDays(6);
+        LocalDate start;
+        if (this.anchorDate != null) {
+            LocalDate a = this.anchorDate.toLocalDate();
+            start = a.isAfter(windowStart) ? a : windowStart;
+        } else {
+            start = windowStart;
+        }
         List<SupabaseClient.MoodEntry> entries = supabase.fetchEntriesBetweenForUser(start, today, this.userId);
 
         if (entries.isEmpty()) {

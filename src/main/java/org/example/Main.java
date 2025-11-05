@@ -82,12 +82,28 @@ public class Main {
                 currentUser = u;
                 LocalDateTime now = LocalDateTime.now();
                 tracker.setUserLoginDate(now);
+                // set anchor strictly from user's account creation (timestamp) when available
+                if (currentUser.createdAt == null) {
+                    java.util.List<SupabaseClient.MoodEntry> entries = supabaseClient.fetchAllEntriesForUser(currentUser.id);
+                    if (entries != null && !entries.isEmpty()) {
+                        java.time.LocalDateTime inferred = entries.get(0).timestamp;
+                        tracker.setAnchorDate(inferred);
+                    } else {
+                        tracker.setAnchorDate(null);
+                    }
+                } else {
+                    tracker.setAnchorDate(currentUser.createdAt);
+                }
                 // set current user id in tracker so entries are associated
                 tracker.setUserId(currentUser.id);
-                // print current user id for quick debugging
-                System.out.println("(debug) current user id = " + currentUser.id);
+                // set current user id in tracker (no debug print)
                 supabaseClient.updateUserLastLogin(u.id, now);
                 System.out.println("Login berhasil sebagai '" + username + "' pada " + now + ".");
+                // show which day number today is relative to the anchor (first-login)
+                long todayDay = tracker.getTodayDayNumber();
+                java.time.LocalDate anchorLocal = tracker.getAnchorDate() != null ? tracker.getAnchorDate().toLocalDate() : tracker.getUserLoginDate() != null ? tracker.getUserLoginDate().toLocalDate() : java.time.LocalDate.now();
+                System.out.println("Hari ini adalah hari ke-" + todayDay + " sejak " + anchorLocal + ".");
+                // debug details hidden in release
                 authenticated = true;
                 continue;
             }
@@ -146,41 +162,50 @@ public class Main {
                         break;
                     }
 
-                    // Pilihan input: pilih hari-ke (1..7) relatif pada 7 hari terakhir, dan jam (0..23)
+                    // Pilihan input baru:
+                    // Anchor diambil dari createdAt (first login) yang sudah diset di tracker.
                     LocalDate today = LocalDate.now();
-                    LocalDate windowStart = today.minusDays(6); // default window start
-                    // prefer tracker user login date as anchor if set and within window
-                    LocalDate start;
-                    if (tracker.getUserLoginDate() != null) {
-                        LocalDate loginLocal = tracker.getUserLoginDate().toLocalDate();
-                        if (!loginLocal.isBefore(windowStart) && !loginLocal.isAfter(today)) {
-                            start = loginLocal;
-                        } else {
-                            start = windowStart;
-                        }
-                    } else {
-                        start = windowStart;
-                    }
-
-                    System.out.print("Masukkan hari-ke (1-7) untuk memilih hari dalam 7-hari terakhir, atau kosongkan untuk hari ini: ");
-                    String hariKeStr = scanner.nextLine().trim();
+                    LocalDate anchor = tracker.getAnchorDate() != null ? tracker.getAnchorDate().toLocalDate() : tracker.getUserLoginDate() != null ? tracker.getUserLoginDate().toLocalDate() : today;
+                    // allowed range: [anchor .. today]
+                    if (anchor.isAfter(today)) anchor = today;
+                    System.out.println("Anchor (hari pertama): " + anchor + " (hari ke-1)");
+                    System.out.println("Rentang tanggal yang diizinkan untuk input: " + anchor + " .. " + today + "");
+                    System.out.print("Input untuk hari ini? (y=ya / n=pilih hari lain): ");
+                    String todayChoice = scanner.nextLine().trim();
                     LocalDate chosenDate;
-                    if (hariKeStr.isEmpty()) {
-                        chosenDate = LocalDate.now();
+                    if (todayChoice.equalsIgnoreCase("y") || todayChoice.isEmpty()) {
+                        chosenDate = today;
                     } else {
-                        int hk;
+                        System.out.print("Masukkan tanggal yang terlambat (YYYY-MM-DD) atau hari-ke sejak anchor (1 = anchor): ");
+                        String other = scanner.nextLine().trim();
+                        // try parse as date first
+                        LocalDate parsed = null;
                         try {
-                            hk = Integer.parseInt(hariKeStr);
-                        } catch (NumberFormatException ex) {
-                            System.out.println("Input hari-ke tidak valid. Entry dibatalkan.");
+                            parsed = LocalDate.parse(other);
+                        } catch (Exception ex) {
+                            parsed = null;
+                        }
+                        if (parsed != null) {
+                            chosenDate = parsed;
+                        } else {
+                            int hk;
+                            try {
+                                hk = Integer.parseInt(other);
+                            } catch (NumberFormatException ex) {
+                                System.out.println("Input tidak valid. Entry dibatalkan.");
+                                break;
+                            }
+                            if (hk < 1) {
+                                System.out.println("Hari-ke harus >= 1. Entry dibatalkan.");
+                                break;
+                            }
+                            chosenDate = anchor.plusDays(hk - 1);
+                        }
+                        // validate chosenDate in allowed range
+                        if (chosenDate.isBefore(anchor) || chosenDate.isAfter(today)) {
+                            System.out.println("Tanggal yang dipilih berada di luar rentang yang diizinkan (" + anchor + " .. " + today + "). Entry dibatalkan.");
                             break;
                         }
-                        if (hk < 1 || hk > 7) {
-                            System.out.println("Hari-ke harus antara 1 dan 7. Entry dibatalkan.");
-                            break;
-                        }
-                        // map hari-ke ke tanggal: 1 -> start, 7 -> today
-                        chosenDate = start.plusDays(hk - 1);
                     }
 
                     System.out.print("Masukkan jam (0-23) atau kosongkan untuk jam sekarang: ");
